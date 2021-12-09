@@ -2310,7 +2310,6 @@ public:
   void
   integrate(const EvaluationFlags::EvaluationFlags integration_flag);
 
-
   /**
    * @deprecated Please use the integrate() function with the EvaluationFlags argument.
    */
@@ -2330,7 +2329,8 @@ public:
    */
   void
   integrate(const EvaluationFlags::EvaluationFlags integration_flag,
-            VectorizedArrayType *                  values_array);
+            VectorizedArrayType *                  values_array,
+            const bool                             sum_into_values = false);
 
   /**
    * @deprecated Please use the integrate() function with the EvaluationFlags argument.
@@ -2859,6 +2859,8 @@ namespace internal
   inline std::tuple<
     const internal::MatrixFreeFunctions::ShapeInfo<VectorizedArrayType> *,
     const internal::MatrixFreeFunctions::DoFInfo *,
+    const internal::MatrixFreeFunctions::
+      MappingInfoStorage<dim - is_face, dim, Number, VectorizedArrayType> *,
     unsigned int,
     unsigned int>
   get_shape_info_and_indices(
@@ -2896,6 +2898,7 @@ namespace internal
         active_fe_index,
         active_quad_index),
       &dof_info,
+      &mapping_storage,
       active_fe_index,
       active_quad_index);
   }
@@ -2933,10 +2936,6 @@ inline FEEvaluationBase<dim,
                                                     n_q_points,
                                                     active_fe_index,
                                                     active_quad_index),
-      internal::MatrixFreeFunctions::
-        MappingInfoCellsOrFaces<dim, Number, is_face, VectorizedArrayType>::get(
-          data_in.get_mapping_info(),
-          quad_no),
       quad_no,
       is_interior_face,
       face_type)
@@ -4994,8 +4993,7 @@ FEEvaluationBase<dim, n_components_, Number, is_face, VectorizedArrayType>::
             for (unsigned int e = 0; e < dim; ++e)
               hessian_out[comp][d][d] +=
                 jac_grad[d][e] *
-                this->gradients_from_hessians_quad[(comp * dim + e) * nqp +
-                                                   q_point];
+                this->gradients_quad[(comp * dim + e) * nqp + q_point];
 
           // add off-diagonal part of J' * grad(u)
           for (unsigned int d = 0, count = dim; d < dim; ++d)
@@ -5003,8 +5001,7 @@ FEEvaluationBase<dim, n_components_, Number, is_face, VectorizedArrayType>::
               for (unsigned int f = 0; f < dim; ++f)
                 hessian_out[comp][d][e] +=
                   jac_grad[count][f] *
-                  this->gradients_from_hessians_quad[(comp * dim + f) * nqp +
-                                                     q_point];
+                  this->gradients_quad[(comp * dim + f) * nqp + q_point];
 
           // take symmetric part
           for (unsigned int d = 0; d < dim; ++d)
@@ -5101,8 +5098,7 @@ FEEvaluationBase<dim, n_components_, Number, is_face, VectorizedArrayType>::
             for (unsigned int e = 0; e < dim; ++e)
               hessian_out[comp][d] +=
                 jac_grad[d][e] *
-                this->gradients_from_hessians_quad[(comp * dim + e) * nqp +
-                                                   q_point];
+                this->gradients_quad[(comp * dim + e) * nqp + q_point];
         }
     }
   return hessian_out;
@@ -7303,28 +7299,13 @@ FEEvaluation<dim,
 
   if (fe_degree > -1)
     SelectEvaluator<dim, fe_degree, n_q_points_1d, VectorizedArrayType>::
-      evaluate(n_components,
-               evaluation_flag_actual,
-               *this->data,
-               const_cast<VectorizedArrayType *>(values_array),
-               this->values_quad,
-               this->gradients_quad,
-               this->hessians_quad,
-               this->scratch_data.begin());
+      evaluate(n_components, evaluation_flag_actual, values_array, *this);
   else
     internal::FEEvaluationFactory<dim, Number, VectorizedArrayType>::evaluate(
       n_components,
       evaluation_flag_actual,
-      *this->data,
       const_cast<VectorizedArrayType *>(values_array),
-      this->values_quad,
-      this->gradients_quad,
-      this->hessians_quad,
-      this->scratch_data.begin());
-
-  if (hessians_on_general_cells)
-    for (unsigned int i = 0; i < n_components * dim * n_q_points; ++i)
-      this->gradients_from_hessians_quad[i] = this->gradients_quad[i];
+      *this);
 
 #  ifdef DEBUG
   if (evaluation_flag_actual & EvaluationFlags::values)
@@ -7454,12 +7435,10 @@ namespace internal
   /**
    * Implementation for vectors that have the begin() methods.
    */
-  template <int dim,
-            int fe_degree,
-            int n_q_points_1d,
-            typename Number,
+  template <typename Number,
             typename VectorizedArrayType,
             typename VectorType,
+            typename T,
             typename std::enable_if<
               internal::has_begin<VectorType>::value &&
                 std::is_same<decltype(std::declval<VectorType>().begin()),
@@ -7467,24 +7446,18 @@ namespace internal
               VectorType>::type * = nullptr>
   bool
   try_integrate_scatter_inplace(
+    T                                             phi,
     VectorType &                                  destination,
     const unsigned int                            cell,
-    const unsigned int                            n_components,
     const unsigned int                            active_fe_index,
     const unsigned int                            first_selected_component,
     const internal::MatrixFreeFunctions::DoFInfo *dof_info,
-    VectorizedArrayType *                         values_quad,
-    VectorizedArrayType *                         gradients_quad,
-    VectorizedArrayType *                         hessians_quad,
-    VectorizedArrayType *                         scratch_data,
-    const internal::MatrixFreeFunctions::ShapeInfo<VectorizedArrayType> *data,
-    const EvaluationFlags::EvaluationFlags integration_flag)
+    const EvaluationFlags::EvaluationFlags        evaluation_flag)
   {
     // If the index storage is interleaved and contiguous and the vector storage
     // has the correct alignment, we can directly pass the pointer into the
-    // vector to the integrate() call, without writing temporary results into a
-    // separate data field that will later be added into the vector. This saves
-    // some operations.
+    // vector to the evaluate() call, without reading the vector entries into a
+    // separate data field. This saves some operations.
     if (std::is_same<typename VectorType::value_type, Number>::value &&
         dof_info->index_storage_variants
             [internal::MatrixFreeFunctions::DoFInfo::dof_access_cell][cell] ==
@@ -7507,28 +7480,8 @@ namespace internal
             dof_info->component_dof_indices_offset[active_fe_index]
                                                   [first_selected_component] *
               VectorizedArrayType::size());
-        if (fe_degree > -1)
-          SelectEvaluator<dim, fe_degree, n_q_points_1d, VectorizedArrayType>::
-            integrate(n_components,
-                      integration_flag,
-                      *data,
-                      vec_values,
-                      values_quad,
-                      gradients_quad,
-                      hessians_quad,
-                      scratch_data,
-                      true);
-        else
-          FEEvaluationFactory<dim, Number, VectorizedArrayType>::integrate(
-            n_components,
-            integration_flag,
-            *data,
-            vec_values,
-            values_quad,
-            gradients_quad,
-            hessians_quad,
-            scratch_data,
-            true);
+
+        phi->integrate(evaluation_flag, vec_values, true);
 
         return true;
       }
@@ -7539,31 +7492,23 @@ namespace internal
   /**
    * Implementation for all other vectors like block vectors.
    */
-  template <int dim,
-            int fe_degree,
-            int n_q_points_1d,
-            typename Number,
+  template <typename Number,
             typename VectorizedArrayType,
             typename VectorType,
+            typename T,
             typename std::enable_if<
               !internal::has_begin<VectorType>::value ||
                 !std::is_same<decltype(std::declval<VectorType>().begin()),
                               Number *>::value,
               VectorType>::type * = nullptr>
   bool
-  try_integrate_scatter_inplace(
-    VectorType &,
-    const unsigned int,
-    const unsigned int,
-    const unsigned int,
-    const unsigned int,
-    const internal::MatrixFreeFunctions::DoFInfo *,
-    const VectorizedArrayType *,
-    const VectorizedArrayType *,
-    const VectorizedArrayType *,
-    const VectorizedArrayType *,
-    const internal::MatrixFreeFunctions::ShapeInfo<VectorizedArrayType> *,
-    const EvaluationFlags::EvaluationFlags)
+  try_integrate_scatter_inplace(T,
+                                VectorType &,
+                                const unsigned int,
+                                const unsigned int,
+                                const unsigned int,
+                                const internal::MatrixFreeFunctions::DoFInfo *,
+                                const EvaluationFlags::EvaluationFlags)
   {
     return false;
   }
@@ -7691,7 +7636,8 @@ FEEvaluation<dim,
              Number,
              VectorizedArrayType>::
   integrate(const EvaluationFlags::EvaluationFlags integration_flag,
-            VectorizedArrayType *                  values_array)
+            VectorizedArrayType *                  values_array,
+            const bool                             sum_into_values_array)
 {
 #  ifdef DEBUG
   if (integration_flag & EvaluationFlags::values)
@@ -7736,24 +7682,16 @@ FEEvaluation<dim,
     SelectEvaluator<dim, fe_degree, n_q_points_1d, VectorizedArrayType>::
       integrate(n_components,
                 integration_flag_actual,
-                *this->data,
                 values_array,
-                this->values_quad,
-                this->gradients_quad,
-                this->hessians_quad,
-                this->scratch_data.begin(),
-                false);
+                *this,
+                sum_into_values_array);
   else
     internal::FEEvaluationFactory<dim, Number, VectorizedArrayType>::integrate(
       n_components,
       integration_flag_actual,
-      *this->data,
       values_array,
-      this->values_quad,
-      this->gradients_quad,
-      this->hessians_quad,
-      this->scratch_data.begin(),
-      false);
+      *this,
+      sum_into_values_array);
 
 #  ifdef DEBUG
   this->dof_values_initialized = true;
@@ -7807,22 +7745,13 @@ FEEvaluation<dim,
   integrate_scatter(const EvaluationFlags::EvaluationFlags integration_flag,
                     VectorType &                           destination)
 {
-  if (internal::try_integrate_scatter_inplace<dim,
-                                              fe_degree,
-                                              n_q_points_1d,
-                                              Number,
-                                              VectorizedArrayType>(
+  if (internal::try_integrate_scatter_inplace<Number, VectorizedArrayType>(
+        this,
         destination,
         this->cell,
-        n_components,
         this->active_fe_index,
         this->first_selected_component,
         this->dof_info,
-        this->values_quad,
-        this->gradients_quad,
-        this->hessians_quad,
-        this->scratch_data.begin(),
-        this->data,
         integration_flag) == false)
     {
       integrate(integration_flag, this->begin_dof_values());
@@ -7932,9 +7861,7 @@ FEFaceEvaluation<dim,
       internal::MatrixFreeFunctions::DoFInfo::dof_access_face_interior :
       internal::MatrixFreeFunctions::DoFInfo::dof_access_face_exterior;
   Assert(this->mapping_data != nullptr, ExcNotInitialized());
-  const internal::MatrixFreeFunctions::FaceToCellTopology<
-    VectorizedArrayType::size()> &faces =
-    this->matrix_info->get_face_info(face_index);
+
   if (face_index >=
         this->matrix_info->get_task_info().face_partition_data.back() &&
       face_index <
@@ -7945,21 +7872,7 @@ FEFaceEvaluation<dim,
              "boundary faces use FEFaceEvaluation with the parameter "
              "is_interior_face set to true. "));
 
-  this->face_no =
-    (this->is_interior_face ? faces.interior_face_no : faces.exterior_face_no);
-  this->subface_index = this->is_interior_face == true ?
-                          GeometryInfo<dim>::max_children_per_cell :
-                          faces.subface_index;
-
-  // First check if interior or exterior cell has non-standard orientation
-  // (i.e. the third bit is one or not). Then set zero if this cell has
-  // standard-orientation else copy the first three bits
-  // (which is equivalent to modulo 8). See also the documentation of
-  // internal::MatrixFreeFunctions::FaceToCellTopology::face_orientation.
-  this->face_orientation =
-    (this->is_interior_face == (faces.face_orientation >= 8)) ?
-      (faces.face_orientation % 8) :
-      0;
+  this->reinit_face(this->matrix_info->get_face_info(face_index));
 
   this->cell_type = this->matrix_info->get_mapping_info().face_type[face_index];
   const unsigned int offsets =
@@ -8144,16 +8057,11 @@ FEFaceEvaluation<dim,
   evaluate(const VectorizedArrayType *            values_array,
            const EvaluationFlags::EvaluationFlags evaluation_flag)
 {
-  Assert(
-    (evaluation_flag & ~(EvaluationFlags::values | EvaluationFlags::gradients |
-                         EvaluationFlags::hessians)) == 0,
-    ExcMessage(
-      "Only EvaluationFlags::values, EvaluationFlags::gradients, and EvaluationFlags::hessians are supported."));
-
-  if (!(evaluation_flag & EvaluationFlags::values) &&
-      !(evaluation_flag & EvaluationFlags::gradients) &&
-      !(evaluation_flag & EvaluationFlags::hessians))
-    return;
+  Assert((evaluation_flag &
+          ~(EvaluationFlags::values | EvaluationFlags::gradients |
+            EvaluationFlags::hessians)) == 0,
+         ExcMessage("Only EvaluationFlags::values, EvaluationFlags::gradients, "
+                    "and EvaluationFlags::hessians are supported."));
 
   const bool hessians_on_general_cells =
     evaluation_flag & EvaluationFlags::hessians &&
@@ -8162,86 +8070,15 @@ FEFaceEvaluation<dim,
   if (hessians_on_general_cells)
     evaluation_flag_actual |= EvaluationFlags::gradients;
 
-  if (this->dof_access_index ==
-        internal::MatrixFreeFunctions::DoFInfo::dof_access_cell &&
-      this->is_interior_face == false)
-    {
-      const auto face_nos          = this->compute_face_no_data();
-      const auto face_orientations = this->compute_face_orientations();
-
-#  ifdef DEBUG
-      // currently on structured meshes are supported -> face numbers and
-      // orientations have to be the same for all filled lanes
-      for (unsigned int v = 1; v < VectorizedArrayType::size(); ++v)
-        {
-          if (face_nos[v] != numbers::invalid_unsigned_int)
-            AssertDimension(face_nos[0], face_nos[v]);
-          if (face_orientations[v] != numbers::invalid_unsigned_int)
-            AssertDimension(face_orientations[0], face_orientations[v]);
-        }
-#  endif
-
-      internal::FEFaceEvaluationImplEvaluateSelector<dim, VectorizedArrayType>::
-        template run<fe_degree, n_q_points_1d>(
-          n_components,
-          *this->data,
-          values_array,
-          this->begin_values(),
-          this->begin_gradients(),
-          this->begin_hessians(),
-          this->scratch_data.begin(),
-          evaluation_flag_actual & EvaluationFlags::values,
-          evaluation_flag_actual & EvaluationFlags::gradients,
-          evaluation_flag_actual & EvaluationFlags::hessians,
-          face_nos[0],
-          this->subface_index,
-          face_orientations[0],
-          this->descriptor->face_orientations);
-    }
+  if (fe_degree > -1)
+    internal::FEFaceEvaluationImplEvaluateSelector<dim, VectorizedArrayType>::
+      template run<fe_degree, n_q_points_1d>(n_components,
+                                             evaluation_flag_actual,
+                                             values_array,
+                                             *this);
   else
-    {
-      if (fe_degree > -1)
-        internal::FEFaceEvaluationImplEvaluateSelector<dim,
-                                                       VectorizedArrayType>::
-          template run<fe_degree, n_q_points_1d>(
-            n_components,
-            *this->data,
-            values_array,
-            this->begin_values(),
-            this->begin_gradients(),
-            this->begin_hessians(),
-            this->scratch_data.begin(),
-            evaluation_flag_actual & EvaluationFlags::values,
-            evaluation_flag_actual & EvaluationFlags::gradients,
-            evaluation_flag_actual & EvaluationFlags::hessians,
-            this->face_no,
-            this->subface_index,
-            this->face_orientation,
-            this->descriptor->face_orientations);
-      else
-        internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
-          evaluate(n_components,
-                   *this->data,
-                   values_array,
-                   this->begin_values(),
-                   this->begin_gradients(),
-                   this->begin_hessians(),
-                   this->scratch_data.begin(),
-                   evaluation_flag_actual & EvaluationFlags::values,
-                   evaluation_flag_actual & EvaluationFlags::gradients,
-                   evaluation_flag_actual & EvaluationFlags::hessians,
-                   this->face_no,
-                   this->subface_index,
-                   this->face_orientation,
-                   this->descriptor->face_orientations);
-    }
-
-  if (hessians_on_general_cells)
-    {
-      unsigned int size = n_components * dim * n_q_points;
-      for (unsigned int i = 0; i < size; ++i)
-        this->gradients_from_hessians_quad[i] = this->gradients_quad[i];
-    }
+    internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
+      evaluate(n_components, evaluation_flag_actual, values_array, *this);
 
 #  ifdef DEBUG
   if (evaluation_flag_actual & EvaluationFlags::values)
@@ -8343,26 +8180,21 @@ FEFaceEvaluation<dim,
                  n_components,
                  Number,
                  VectorizedArrayType>::
-  integrate(const EvaluationFlags::EvaluationFlags evaluation_flag,
+  integrate(const EvaluationFlags::EvaluationFlags integration_flag,
             VectorizedArrayType *                  values_array)
 {
-  Assert(
-    (evaluation_flag & ~(EvaluationFlags::values | EvaluationFlags::gradients |
-                         EvaluationFlags::hessians)) == 0,
-    ExcMessage(
-      "Only EvaluationFlags::values, EvaluationFlags::gradients, and EvaluationFlags::hessians are supported."));
+  Assert((integration_flag &
+          ~(EvaluationFlags::values | EvaluationFlags::gradients |
+            EvaluationFlags::hessians)) == 0,
+         ExcMessage("Only EvaluationFlags::values, EvaluationFlags::gradients, "
+                    "and EvaluationFlags::hessians are supported."));
 
-  if (!(evaluation_flag & EvaluationFlags::values) &&
-      !(evaluation_flag & EvaluationFlags::gradients) &&
-      !(evaluation_flag & EvaluationFlags::hessians))
-    return;
-
-  EvaluationFlags::EvaluationFlags evaluation_flag_actual = evaluation_flag;
-  if (evaluation_flag & EvaluationFlags::hessians &&
+  EvaluationFlags::EvaluationFlags integration_flag_actual = integration_flag;
+  if (integration_flag & EvaluationFlags::hessians &&
       (this->cell_type > internal::MatrixFreeFunctions::affine))
     {
       unsigned int size = n_components * dim * n_q_points;
-      if (evaluation_flag & EvaluationFlags::gradients)
+      if (integration_flag & EvaluationFlags::gradients)
         {
           for (unsigned int i = 0; i < size; ++i)
             this->gradients_quad[i] += this->gradients_from_hessians_quad[i];
@@ -8371,43 +8203,19 @@ FEFaceEvaluation<dim,
         {
           for (unsigned int i = 0; i < size; ++i)
             this->gradients_quad[i] = this->gradients_from_hessians_quad[i];
-          evaluation_flag_actual |= EvaluationFlags::gradients;
+          integration_flag_actual |= EvaluationFlags::gradients;
         }
     }
 
   if (fe_degree > -1)
     internal::FEFaceEvaluationImplIntegrateSelector<dim, VectorizedArrayType>::
-      template run<fe_degree, n_q_points_1d>(
-        n_components,
-        *this->data,
-        values_array,
-        this->begin_values(),
-        this->begin_gradients(),
-        this->begin_hessians(),
-        this->scratch_data.begin(),
-        evaluation_flag_actual & EvaluationFlags::values,
-        evaluation_flag_actual & EvaluationFlags::gradients,
-        evaluation_flag_actual & EvaluationFlags::hessians,
-        this->face_no,
-        this->subface_index,
-        this->face_orientation,
-        this->descriptor->face_orientations);
+      template run<fe_degree, n_q_points_1d>(n_components,
+                                             integration_flag_actual,
+                                             values_array,
+                                             *this);
   else
     internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
-      integrate(n_components,
-                *this->data,
-                values_array,
-                this->begin_values(),
-                this->begin_gradients(),
-                this->begin_hessians(),
-                this->scratch_data.begin(),
-                evaluation_flag_actual & EvaluationFlags::values,
-                evaluation_flag_actual & EvaluationFlags::gradients,
-                evaluation_flag_actual & EvaluationFlags::hessians,
-                this->face_no,
-                this->subface_index,
-                this->face_orientation,
-                this->descriptor->face_orientations);
+      integrate(n_components, integration_flag_actual, values_array, *this);
 }
 
 
@@ -8463,119 +8271,44 @@ FEFaceEvaluation<dim,
     ExcMessage(
       "Only EvaluationFlags::values, EvaluationFlags::gradients, and EvaluationFlags::hessians are supported."));
 
-  const auto fu = [&]() {
-    const auto shared_vector_data = internal::get_shared_vector_data(
-      input_vector,
-      this->dof_access_index ==
-        internal::MatrixFreeFunctions::DoFInfo::dof_access_cell,
-      this->active_fe_index,
-      this->dof_info);
+  const auto shared_vector_data = internal::get_shared_vector_data(
+    input_vector,
+    this->dof_access_index ==
+      internal::MatrixFreeFunctions::DoFInfo::dof_access_cell,
+    this->active_fe_index,
+    this->dof_info);
 
-    if (this->dof_access_index ==
-          internal::MatrixFreeFunctions::DoFInfo::dof_access_cell &&
-        this->is_interior_face == false)
-      {
-        const auto cells             = this->get_cell_or_face_ids();
-        const auto face_nos          = this->compute_face_no_data();
-        const auto face_orientations = this->compute_face_orientations();
-
-        return internal::FEFaceEvaluationImplGatherEvaluateSelector<
+  if (fe_degree > 0 &&
+      internal::FEFaceEvaluationImplGatherEvaluateSelector<
+        dim,
+        Number,
+        VectorizedArrayType>::supports(evaluation_flag,
+                                       *this->data,
+                                       internal::get_beginning<Number>(
+                                         input_vector),
+                                       this->dof_info->index_storage_variants
+                                         [this->dof_access_index][this->cell]))
+    {
+      if (fe_degree > -1)
+        internal::FEFaceEvaluationImplGatherEvaluateSelector<
           dim,
           Number,
           VectorizedArrayType>::template run<fe_degree,
                                              n_q_points_1d>(
           n_components,
-          VectorizedArrayType::size(),
+          evaluation_flag,
           internal::get_beginning<Number>(input_vector),
           shared_vector_data,
-          *this->data,
-          *this->dof_info,
-          this->begin_values(),
-          this->begin_gradients(),
-          this->begin_hessians(),
-          this->scratch_data.begin(),
-          evaluation_flag & EvaluationFlags::values,
-          evaluation_flag & EvaluationFlags::gradients,
-          evaluation_flag & EvaluationFlags::hessians,
-          this->active_fe_index,
-          this->first_selected_component,
-          cells,
-          face_nos,
-          this->subface_index,
-          this->dof_access_index,
-          face_orientations,
-          this->descriptor->face_orientations);
-      }
-    else
-      {
-        // TODO: this copying should not be necessary once we have introduced
-        // an internal-data structure
-        std::array<unsigned int, VectorizedArrayType::size()> cells_   = {};
-        std::array<unsigned int, VectorizedArrayType::size()> face_no_ = {};
-        std::array<unsigned int, VectorizedArrayType::size()>
-          face_orientation_ = {};
-
-        cells_[0]            = this->cell;
-        face_no_[0]          = this->face_no;
-        face_orientation_[0] = this->face_orientation;
-
-        if (fe_degree > -1)
-          {
-            return internal::FEFaceEvaluationImplGatherEvaluateSelector<
-              dim,
-              Number,
-              VectorizedArrayType>::template run<fe_degree,
-                                                 n_q_points_1d>(
-              n_components,
-              1,
-              internal::get_beginning<Number>(input_vector),
-              shared_vector_data,
-              *this->data,
-              *this->dof_info,
-              this->begin_values(),
-              this->begin_gradients(),
-              this->begin_hessians(),
-              this->scratch_data.begin(),
-              evaluation_flag & EvaluationFlags::values,
-              evaluation_flag & EvaluationFlags::gradients,
-              evaluation_flag & EvaluationFlags::hessians,
-              this->active_fe_index,
-              this->first_selected_component,
-              cells_,
-              face_no_,
-              this->subface_index,
-              this->dof_access_index,
-              face_orientation_,
-              this->descriptor->face_orientations);
-          }
-        else
-          return internal::
-            FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
-              gather_evaluate(n_components,
-                              1,
-                              internal::get_beginning<Number>(input_vector),
-                              shared_vector_data,
-                              *this->data,
-                              *this->dof_info,
-                              this->begin_values(),
-                              this->begin_gradients(),
-                              this->begin_hessians(),
-                              this->scratch_data.begin(),
-                              evaluation_flag & EvaluationFlags::values,
-                              evaluation_flag & EvaluationFlags::gradients,
-                              evaluation_flag & EvaluationFlags::hessians,
-                              this->active_fe_index,
-                              this->first_selected_component,
-                              cells_,
-                              face_no_,
-                              this->subface_index,
-                              this->dof_access_index,
-                              face_orientation_,
-                              this->descriptor->face_orientations);
-      }
-  };
-
-  if (!fu())
+          *this);
+      else
+        internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
+          gather_evaluate(n_components,
+                          evaluation_flag,
+                          internal::get_beginning<Number>(input_vector),
+                          shared_vector_data,
+                          *this);
+    }
+  else
     {
       this->read_dof_values(input_vector);
       this->evaluate(evaluation_flag);
@@ -8635,7 +8368,7 @@ FEFaceEvaluation<dim,
                  n_components_,
                  Number,
                  VectorizedArrayType>::
-  integrate_scatter(const EvaluationFlags::EvaluationFlags evaluation_flag,
+  integrate_scatter(const EvaluationFlags::EvaluationFlags integration_flag,
                     VectorType &                           destination)
 {
   Assert((this->dof_access_index ==
@@ -8650,81 +8383,40 @@ FEFaceEvaluation<dim,
     this->active_fe_index,
     this->dof_info);
 
-  // TODO: this copying should not be necessary once we have introduced
-  // an internal-data structure
-  std::array<unsigned int, VectorizedArrayType::size()> cells_            = {};
-  std::array<unsigned int, VectorizedArrayType::size()> face_no_          = {};
-  std::array<unsigned int, VectorizedArrayType::size()> face_orientation_ = {};
-
-  cells_[0]            = this->cell;
-  face_no_[0]          = this->face_no;
-  face_orientation_[0] = this->face_orientation;
-
-  if (fe_degree > -1)
+  if (fe_degree > 0 &&
+      internal::FEFaceEvaluationImplGatherEvaluateSelector<
+        dim,
+        Number,
+        VectorizedArrayType>::supports(integration_flag,
+                                       *this->data,
+                                       internal::get_beginning<Number>(
+                                         destination),
+                                       this->dof_info->index_storage_variants
+                                         [this->dof_access_index][this->cell]))
     {
-      if (!internal::FEFaceEvaluationImplIntegrateScatterSelector<
-            dim,
-            Number,
-            VectorizedArrayType>::template run<fe_degree,
-                                               n_q_points_1d>(
-            n_components,
-            1,
-            internal::get_beginning<Number>(destination),
-            shared_vector_data,
-            *this->data,
-            *this->dof_info,
-            this->begin_dof_values(),
-            this->begin_values(),
-            this->begin_gradients(),
-            this->begin_hessians(),
-            this->scratch_data.begin(),
-            evaluation_flag & EvaluationFlags::values,
-            evaluation_flag & EvaluationFlags::gradients,
-            evaluation_flag & EvaluationFlags::hessians,
-            this->active_fe_index,
-            this->first_selected_component,
-            cells_,
-            face_no_,
-            this->subface_index,
-            this->dof_access_index,
-            face_orientation_,
-            this->descriptor->face_orientations))
-        {
-          // if we arrive here, writing into the destination vector did not
-          // succeed because some of the assumptions in integrate_scatter were
-          // not fulfilled (e.g. an element or degree that does not support
-          // direct writing), so we must do it here
-          this->distribute_local_to_global(destination);
-        }
+      if (fe_degree > -1)
+        internal::FEFaceEvaluationImplIntegrateScatterSelector<
+          dim,
+          Number,
+          VectorizedArrayType>::template run<fe_degree,
+                                             n_q_points_1d>(
+          n_components,
+          integration_flag,
+          internal::get_beginning<Number>(destination),
+          shared_vector_data,
+          *this);
+      else
+        internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
+          integrate_scatter(n_components,
+                            integration_flag,
+                            internal::get_beginning<Number>(destination),
+                            shared_vector_data,
+                            *this);
     }
   else
     {
-      if (!internal::FEFaceEvaluationFactory<dim, Number, VectorizedArrayType>::
-            integrate_scatter(n_components,
-                              1,
-                              internal::get_beginning<Number>(destination),
-                              shared_vector_data,
-                              *this->data,
-                              *this->dof_info,
-                              this->begin_dof_values(),
-                              this->begin_values(),
-                              this->begin_gradients(),
-                              this->begin_hessians(),
-                              this->scratch_data.begin(),
-                              evaluation_flag & EvaluationFlags::values,
-                              evaluation_flag & EvaluationFlags::gradients,
-                              evaluation_flag & EvaluationFlags::hessians,
-                              this->active_fe_index,
-                              this->first_selected_component,
-                              cells_,
-                              face_no_,
-                              this->subface_index,
-                              this->dof_access_index,
-                              face_orientation_,
-                              this->descriptor->face_orientations))
-        {
-          this->distribute_local_to_global(destination);
-        }
+      integrate(integration_flag);
+      this->distribute_local_to_global(destination);
     }
 }
 
