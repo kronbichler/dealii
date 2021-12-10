@@ -68,7 +68,7 @@ test_hessians(const dealii::FE_Poly<dim> &                   fe,
   typename MatrixFree<dim, double, VectorizedArrayType>::AdditionalData
     additional_data;
   additional_data.mapping_update_flags =
-    update_values | update_gradients | update_hessians;
+    update_values | update_gradients | update_hessians | update_jacobian_grads;
 
   MatrixFree<dim, double, VectorizedArrayType> matrix_free;
   matrix_free.reinit(mapping, dof_handler, constraints, quad, additional_data);

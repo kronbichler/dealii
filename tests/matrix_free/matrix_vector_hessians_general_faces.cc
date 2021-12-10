@@ -72,7 +72,7 @@ test_hessians(const unsigned int                             degree,
   typename MatrixFree<dim, double, VectorizedArrayType>::AdditionalData
     additional_data;
   additional_data.mapping_update_flags_inner_faces =
-    update_values | update_gradients | update_hessians;
+    update_values | update_gradients | update_hessians | update_jacobian_grads;
 
   MatrixFree<dim, double, VectorizedArrayType> matrix_free;
   matrix_free.reinit(

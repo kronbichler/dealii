@@ -70,8 +70,7 @@ namespace internal
       // for Hessian information, need inverse Jacobians and the derivative of
       // Jacobians (these two together will give use the gradients of the
       // inverse Jacobians, which is what we need)
-      if (update_flags & update_hessians ||
-          update_flags & update_jacobian_grads)
+      if (update_flags & update_jacobian_grads)
         new_flags |= update_jacobian_grads;
 
       if (update_flags & update_quadrature_points)
@@ -136,7 +135,7 @@ namespace internal
            update_quadrature_points :
            update_default) |
         ((update_flags_inner_faces | update_flags_boundary_faces) &
-             (update_jacobian_grads | update_hessians) ?
+             update_jacobian_grads ?
            update_jacobian_grads :
            update_default) |
         update_normal_vectors | update_JxW_values | update_jacobians;
