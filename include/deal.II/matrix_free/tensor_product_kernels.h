@@ -63,7 +63,11 @@ namespace internal
      * coefficient arrays. See the documentation of the EvaluatorTensorProduct
      * specialization for more information.
      */
-    evaluate_symmetric_hierarchical
+    evaluate_symmetric_hierarchical,
+    /**
+     * Evaluate an operator using two-point flux differencing.
+     */
+    evaluate_two_point_flux
   };
 
 
@@ -1101,6 +1105,111 @@ namespace internal
             else
               out[stride_out * (nn - 1)] = r0;
           }
+      }
+  }
+
+
+
+  /**
+   * Internal evaluator specialized for two-point flux differencing. It
+   * assumes that the shape functions and quadrature points are symmetric
+   * about the middle point.
+   */
+  template <EvaluatorVariant  variant,
+            EvaluatorQuantity quantity,
+            int               n_rows,
+            int               n_columns,
+            int               stride_in,
+            int               stride_out,
+            bool              transpose_matrix,
+            bool              add,
+            typename Number,
+            typename Number2>
+  std::enable_if_t<(variant == evaluate_two_point_flux), void>
+  apply_matrix_vector_product(const Number2 *matrix,
+                              const Number  *in,
+                              Number        *out)
+  {
+    // We can only statically assert that one argument is non-zero because
+    // face evaluation might instantiate some functions, so we need to use the
+    // run-time assert to verify that we do not end up involuntarily.
+    static_assert(n_rows > 0 || n_columns > 0,
+                  "Specialization only for n_rows, n_columns > 0");
+    Assert(n_rows > 0 && n_columns > 0,
+           ExcInternalError("The evaluation needs n_rows, n_columns > 0, but " +
+                            std::to_string(n_rows) + ", " +
+                            std::to_string(n_columns) + " was passed!"));
+    Assert(quantity == EvaluatorQuantity::gradient, ExcNotImplemented());
+    Assert(transpose_matrix == false, ExcNotImplemented());
+    Assert(n_rows == n_columns, ExcNotImplemented());
+
+    constexpr int mm  = n_columns;
+    constexpr int mid = mm / 2;
+
+    std::array<Number, mm> x;
+    for (int i = 0; i < mm; ++i)
+      x[i] = in[stride_in * i];
+
+    // For the specialized loop used for gradient computations we
+    // exploit symmetries according to the following entries (sorted
+    // lexicographically, rows run over 1d dofs, columns over quadrature
+    // points)
+    for (int col = 0; col < mid; ++col)
+      {
+        Number2 val0, val1;
+        Number  res0, res1;
+        val0 = matrix[col * n_columns];
+        val1 = matrix[(mm - col - 1) * n_columns];
+        if (mid > 0)
+          {
+            res0 = val0 * (x[0] + x[col]);
+            res1 = val1 * (x[0] + x[mm - 1 - col]);
+            res0 -= val1 * (x[mm - 1] + x[col]);
+            res1 -= val0 * (x[mm - 1] + x[mm - 1 - col]);
+            for (int ind = 1; ind < mid; ++ind)
+              {
+                val0 = matrix[col * n_columns + ind];
+                val1 = matrix[(mm - col - 1) * n_columns + ind];
+                res0 += val0 * (x[ind] + x[col]);
+                res1 += val1 * (x[ind] + x[mm - 1 - col]);
+                res0 -= val1 * (x[mm - 1 - ind] + x[col]);
+                res1 -= val0 * (x[mm - 1 - ind] + x[mm - 1 - col]);
+              }
+          }
+        else
+          res0 = res1 = Number();
+        if (mm % 2 == 1)
+          {
+            val0 = matrix[col * n_columns + mid];
+            res0 += val0 * (x[mid] + x[col]);
+            res1 -= val0 * (x[mid] + x[mm - 1 - col]);
+          }
+        if (add)
+          {
+            out[stride_out * col] += res0;
+            out[stride_out * (mm - 1 - col)] += res1;
+          }
+        else
+          {
+            out[stride_out * col]            = res0;
+            out[stride_out * (mm - 1 - col)] = res1;
+          }
+      }
+    if (mm % 2 == 1)
+      {
+        Number2 val0;
+        Number  res0;
+        val0 = matrix[mid * n_columns];
+        res0 = val0 * (x[0] - x[mm - 1]);
+        for (int ind = 1; ind < mid; ++ind)
+          {
+            val0 = matrix[mid * n_columns + ind];
+            res0 += val0 * (x[ind] - x[mm - 1 - ind]);
+          }
+        if (add)
+          out[stride_out * mid] += res0;
+        else
+          out[stride_out * mid] = res0;
       }
   }
 
