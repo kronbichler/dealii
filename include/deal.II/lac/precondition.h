@@ -3574,13 +3574,10 @@ namespace internal
       void
       apply_to_subrange(const std::size_t begin, const std::size_t end) const
       {
-        // To circumvent a bug in gcc
-        // (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=63945), we create
-        // copies of the variables factor1 and factor2 and do not check based on
-        // factor1.
-        const double factor1        = this->factor1;
-        const double factor1_plus_1 = 1. + this->factor1;
-        const double factor2        = this->factor2;
+        // Create local copies to help the aliasing detection.
+        const Number factor1        = this->factor1;
+        const Number factor1_plus_1 = 1. + this->factor1;
+        const Number factor2        = this->factor2;
         if (compute_residual_norm)
           {
             VectorizedArray<Number> local_sum = 0;
