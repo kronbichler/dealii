@@ -3400,37 +3400,42 @@ namespace internal
               }
           };
           if (compute_residual_norm)
-            preconditioner.vmult(
-              temp_vector2,
-              temp_vector1,
-              [&](const auto begin, const auto end) {
-                if (end > begin)
-                  std::memset(temp_vector2_ptr + begin,
-                              0,
-                              sizeof(Number) * (end - begin));
+            {
+              preconditioner.vmult(
+                temp_vector2,
+                temp_vector1,
+                [&](const auto begin, const auto end) {
+                  if (end > begin)
+                    std::memset(temp_vector2_ptr + begin,
+                                0,
+                                sizeof(Number) * (end - begin));
 
-                VectorizedArray<Number> local_sum = 0;
-                constexpr unsigned int  n_lanes =
-                  VectorizedArray<Number>::size();
-                const unsigned int end_regular = end / n_lanes * n_lanes;
-                for (unsigned int i = begin; i < end_regular; i += n_lanes)
-                  {
-                    VectorizedArray<Number> rhs_i, tmp_i;
-                    rhs_i.load(rhs_ptr + i);
-                    tmp_i.load(temp_vector1_ptr + i);
-                    const VectorizedArray<Number> residual_i = rhs_i - tmp_i;
-                    residual_i.store(temp_vector1_ptr + i);
-                    local_sum += residual_i * residual_i;
-                  }
-                for (unsigned int i = end_regular; i < end; ++i)
-                  {
-                    temp_vector1_ptr[i] = rhs_ptr[i] - temp_vector1_ptr[i];
-                    local_sum[i - end_regular] +=
-                      temp_vector1_ptr[i] * temp_vector1_ptr[i];
-                  }
-                sum += local_sum;
-              },
-              post_update);
+                  VectorizedArray<Number> local_sum = 0;
+                  constexpr unsigned int  n_lanes =
+                    VectorizedArray<Number>::size();
+                  const unsigned int end_regular = end / n_lanes * n_lanes;
+                  for (unsigned int i = begin; i < end_regular; i += n_lanes)
+                    {
+                      VectorizedArray<Number> rhs_i, tmp_i;
+                      rhs_i.load(rhs_ptr + i);
+                      tmp_i.load(temp_vector1_ptr + i);
+                      const VectorizedArray<Number> residual_i = rhs_i - tmp_i;
+                      residual_i.store(temp_vector1_ptr + i);
+                      local_sum += residual_i * residual_i;
+                    }
+                  for (unsigned int i = end_regular; i < end; ++i)
+                    {
+                      temp_vector1_ptr[i] = rhs_ptr[i] - temp_vector1_ptr[i];
+                      local_sum[i - end_regular] +=
+                        temp_vector1_ptr[i] * temp_vector1_ptr[i];
+                    }
+                  sum += local_sum;
+                },
+                post_update);
+              residual_norm = std::sqrt(
+                Utilities::MPI::sum(sum.sum(),
+                                    solution_old.get_mpi_communicator()));
+            }
           else
             preconditioner.vmult(
               temp_vector2,
@@ -3445,9 +3450,6 @@ namespace internal
                   temp_vector1_ptr[i] = rhs_ptr[i] - temp_vector1_ptr[i];
               },
               post_update);
-          residual_norm =
-            std::sqrt(Utilities::MPI::sum(sum.sum(),
-                                          solution_old.get_mpi_communicator()));
         }
 
       solution_old.swap(temp_vector2);
@@ -4022,8 +4024,9 @@ namespace internal
                 }
             });
 
-          residual_norm = std::sqrt(
-            Utilities::MPI::sum(sum.sum(), solution.get_mpi_communicator()));
+          if (compute_residual_norm)
+            residual_norm = std::sqrt(
+              Utilities::MPI::sum(sum.sum(), solution.get_mpi_communicator()));
         }
       solution.swap(temp_vector2);
       solution_old.swap(temp_vector2);
@@ -4085,8 +4088,11 @@ namespace internal
       solution.swap(temp_vector1);
       solution_old.swap(temp_vector1);
 
-      return std::sqrt(Utilities::MPI::sum(updater.sum_accumulator.sum(),
-                                           solution.get_mpi_communicator()));
+      if (compute_residual_norm)
+        return std::sqrt(Utilities::MPI::sum(updater.sum_accumulator.sum(),
+                                             solution.get_mpi_communicator()));
+      else
+        return 0;
     }
 
     template <typename MatrixType, typename PreconditionerType>
