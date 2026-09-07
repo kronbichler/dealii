@@ -410,7 +410,8 @@ public:
    * locations, this function simply returns the value also produced by
    * `cell->bounding_box()`. However, there are also mappings that add
    * displacements or choose completely different locations, e.g.,
-   * MappingQEulerian, MappingQ1Eulerian, or MappingFEField.
+   * MappingFEField, MappingQEulerian or MappingQCache. Accordingly, this
+   * function differs by taking those displacements into account.
    *
    * For linear mappings, this function returns the bounding box containing all
    * the vertices of the cell, as returned by the get_vertices() method. For
@@ -418,7 +419,7 @@ public:
    * only guaranteed to contain all the support points, and it is, in general,
    * only an approximation of the true bounding box, which may be larger.
    *
-   * @param[in] cell The cell for which you want to compute the bounding box
+   * @param[in] cell The cell for which you want to compute the bounding box.
    */
   virtual BoundingBox<spacedim>
   get_bounding_box(
