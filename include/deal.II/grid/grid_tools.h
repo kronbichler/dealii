@@ -612,18 +612,23 @@ namespace GridTools
    * parallel::TriangulationBase objects and, unlike its serial version, also
    * for a distributed triangulation (see parallel::distributed::Triangulation).
    *
-   * @param[in] cache a GridTools::Cache object
-   * @param[in] local_points the array of points owned by the current process.
-   * Every process can have a different array of points which can be empty and
-   * not contained within the locally owned part of the triangulation
-   * @param[in] global_bboxes a vector of vectors of bounding boxes; it
-   * describes the locally owned part of the mesh for each process. The bounding
-   * boxes describing which part of the mesh is locally owned by process with
-   * rank rk are contained in global_bboxes[rk]. The local description can be
-   * obtained from GridTools::compute_mesh_predicate_bounding_box; then the
-   * global one can be obtained using either
-   * GridTools::exchange_local_bounding_boxes or Utilities::MPI::all_gather
-   * @param[in] tolerance Tolerance in terms of unit cell coordinates. Depending
+   * @param[in] cache A GridTools::Cache object.
+   * @param[in] local_points The array of points owned by the current process.
+   *   Every process can have a different array of points which can be empty
+   *   and not contained within the locally owned part of the triangulation.
+   * @param[in] global_bboxes A vector of vectors of bounding boxes; it
+   *   describes the locally owned part of the mesh for each process. The
+   *   bounding boxes describing which part of the mesh is locally owned by
+   *   process with rank rk are contained in global_bboxes[rk]. The local
+   *   description can be obtained from
+   *   GridTools::compute_mesh_predicate_bounding_box; then the
+   *   global one can be obtained using either
+   *   GridTools::exchange_local_bounding_boxes or Utilities::MPI::all_gather.
+   * @param[in] tolerance Tolerance for checking whether a point is located
+   *   within a cell, specified in reference cell coordinates. The function
+   *   checks whether a point lies within a cell by transforming it to
+   *   reference coordinates and verifying that all coordinates are within
+   *   the reference cell up to the given tolerance. Depending
    *   on the problem, it might be necessary to adjust the tolerance in order
    *   to be able to identify a cell. Floating
    *   point arithmetic implies that a point will, in general, not lie exactly
@@ -631,16 +636,20 @@ namespace GridTools
    *   of the cells adjacent to a vertex or an edge/face this function returns.
    *   Consequently, algorithms that call this function need to take into
    *   account that the returned cell will only contain the point approximately.
+   * @param[in] marked_vertices An optional array of bools indicating which
+   *   vertices of @p mesh will be considered within the search
+   *   as the potentially closest vertex. On receiving a non-empty
+   *   @p marked_vertices, the function will
+   *   only search among @p marked_vertices for the closest vertex,
+   *   otherwise on all vertices in the mesh. The array is indexed by the
+   *   vertex index within the mesh, i.e., vertex->index(), and is not
+   *   associated with the indices of cells.
    * @param[in] enforce_unique_mapping Enforce a one to one mapping between
-   points
-   *   in real and reference space.
-   * @param[in] marked_vertices An array of bools indicating which
-   * vertices of @p mesh will be considered within the search
-   * as the potentially closest vertex. On receiving a non-empty
-   * @p marked_vertices, the function will
-   * only search among @p marked_vertices for the closest vertex,
-   * otherwise on all vertices in the mesh.
-
+   *   points in real space and cells where the point is located. If set to
+   *   @p false then for points located on several cells upon a tolerance
+   *   (e.g., exactly on mesh vertices or edges), all adjacent cells are
+   *   returned. Otherwise, exactly one of these cells is returned.
+   *
    * @return A tuple containing the quadrature information
    *
    * The elements of the output tuple are:
@@ -648,16 +657,16 @@ namespace GridTools
    * - qpoints : a vector of vectors of points; containing in @p qpoints[i]
    *   the reference positions of all points that fall within the cell @p cells[i] .
    * - maps : a vector of vectors of integers, containing the mapping between
-   *  the numbering in qpoints (previous element of the tuple), and the vector
-   *  of local points of the process owning the points.
+   *   the numbering in qpoints (previous element of the tuple), and the vector
+   *   of local points of the process owning the points.
    * - points : a vector of vectors of points. @p points[i][j] is the point in the
-   *  real space corresponding
-   *  to @p qpoints[i][j] . Notice @p points are the points lying on the locally
-   *  owned part of the mesh; thus these can be either copies of @p local_points
-   *  or points received from other processes i.e. local_points for other
-   * processes
+   *   real space corresponding
+   *   to @p qpoints[i][j] . Notice @p points are the points lying on the locally
+   *   owned part of the mesh; thus these can be either copies of @p local_points
+   *   or points received from other processes i.e. local_points for other
+   *   processes.
    * - owners : a vector of vectors; @p owners[i][j] contains the rank of
-   *  the process owning the point[i][j] (previous element of the tuple).
+   *   the process owning the point[i][j] (previous element of the tuple).
    *
    * The function uses the triangulation's mpi communicator: for this reason it
    * throws an assert error if the Triangulation is not derived from
