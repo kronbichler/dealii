@@ -1,0 +1,9 @@
+New: Struct Portable::internal::batched::EvaluatorTensorProduct supporting
+batched processing of points has been added. The new struct allows for
+simpler definition than current Porable::internal::EvaluatorTensorProduct
+via apply_matrix_vector_product() function, and the new struct is meant to
+replace the current one in coming months. Additionally, fused evaluation of
+the gradients in the collocation space actoss all direction has been added
+allowing for faster execution on GPUs.
+<br>
+(Ivan Prusak, Enes Soydan, Ivan Pribec, Martin Kronbichler, 2026/09/09)
